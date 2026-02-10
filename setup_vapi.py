@@ -275,6 +275,11 @@ def main():
             "url": SERVER_URL,
             "timeoutSeconds": 20,
         },
+        "stopSpeakingPlan": {
+            "numWords": 0,
+            "voiceSeconds": 0.2,
+            "backoffSeconds": 1,
+        },
         "silenceTimeoutSeconds": 30,
         "maxDurationSeconds": 600,
         "endCallMessage": "Thanks for the chat. Have a great day.",

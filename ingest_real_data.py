@@ -14,6 +14,8 @@ import json
 import os
 import sqlite3
 import sys
+import io
+import zipfile
 from datetime import datetime
 
 
@@ -23,6 +25,14 @@ DB_DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engagemen
 def open_csv(path: str):
     if path.endswith(".gz"):
         return gzip.open(path, "rt", encoding="utf-8", newline="")
+    if path.endswith(".zip"):
+        zf = zipfile.ZipFile(path)
+        names = [n for n in zf.namelist() if not n.endswith("/")]
+        if not names:
+            zf.close()
+            raise FileNotFoundError(f"No files found inside {path}")
+        raw = zf.open(names[0], "r")
+        return io.TextIOWrapper(raw, encoding="utf-8", newline="")
     return open(path, "r", encoding="utf-8", newline="")
 
 

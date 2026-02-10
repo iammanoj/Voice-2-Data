@@ -238,6 +238,28 @@ Options:
 - `--limit 100000` to cap rows per dataset
 - `.csv.gz` inputs are supported
 
+## Voice Behavior
+
+The assistant uses VAPI's `stopSpeakingPlan` to support **barge-in** — when the user starts speaking, the agent immediately stops talking:
+
+| Setting | Value | Effect |
+|---------|-------|--------|
+| `numWords` | 0 | Stop on any speech (no minimum word count) |
+| `voiceSeconds` | 0.2 | 200ms of detected voice triggers the stop |
+| `backoffSeconds` | 1 | Wait 1s before resuming after interruption |
+
+This is configured in `setup_vapi.py` and applied to the VAPI assistant via API.
+
+## Testing
+
+```bash
+# Backend (45 tests)
+source .venv/bin/activate && python -m pytest tests/ -v
+
+# Frontend (31 tests)
+cd frontend && npm test
+```
+
 ## Troubleshooting
 
 **"No data" responses:** The LLM may generate SQL with wrong column names. Check backend logs for the actual SQL being generated.
