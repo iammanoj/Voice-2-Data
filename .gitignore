@@ -1,0 +1,23 @@
+# Database
+engagement.db
+
+# Environment files (contain API keys)
+.env
+frontend/.env
+
+# Generated config
+vapi_config.json
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+
+# ngrok
+/tmp/ngrok.log
