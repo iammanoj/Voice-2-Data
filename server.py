@@ -11,34 +11,127 @@ import json
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import time
+import urllib.request
+import urllib.error
 from contextlib import contextmanager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("voice-to-data")
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+
+
+# ── Load .env file ─────────────────────────────────────────────────────────
+
+def _load_env_file():
+    """Load .env file into os.environ (no python-dotenv dependency)."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.exists(env_path):
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, val = line.split("=", 1)
+                key, val = key.strip(), val.strip()
+                if key not in os.environ:  # Don't override real env vars
+                    os.environ[key] = val
+
+_load_env_file()
+
+FRONTEND_ORIGIN = os.environ.get("FRONTEND_ORIGIN", "http://localhost:5173")
 
 app = FastAPI(title="Voice-to-Data Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[FRONTEND_ORIGIN],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "engagement.db")
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
+VAPI_WEBHOOK_SECRET = os.environ.get("VAPI_WEBHOOK_SECRET", "")
 
 # In-memory store for comparison tables, keyed by call_id
 # Frontend polls/SSE subscribes to get the latest table for a session
 table_store: dict[str, dict] = {}
 # SSE event queues per call_id
 sse_queues: dict[str, list[asyncio.Queue]] = {}
+
+# ── Google JWT Verification ────────────────────────────────────────────────
+
+# Cache verified tokens: token -> (email, exp_time)
+_token_cache: dict[str, tuple[str, float]] = {}
+_CACHE_MAX = 500
+
+
+def _verify_google_token(token: str) -> dict:
+    """Verify a Google ID token using Google's tokeninfo endpoint.
+
+    Returns the token payload on success, raises HTTPException on failure.
+    This fully verifies the JWT signature, issuer, audience, and expiry
+    on Google's servers — no cryptography library needed.
+    """
+    # Check cache first
+    now = time.time()
+    if token in _token_cache:
+        email, exp = _token_cache[token]
+        if exp > now:
+            return {"email": email}
+        else:
+            del _token_cache[token]
+
+    try:
+        url = f"https://oauth2.googleapis.com/tokeninfo?id_token={token}"
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            payload = json.loads(resp.read())
+    except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError) as e:
+        logger.warning(f"Google token verification failed: {e}")
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # Verify audience matches our client ID
+    if GOOGLE_CLIENT_ID and payload.get("aud") != GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=401, detail="Token audience mismatch")
+
+    # Cache the verified token
+    exp = float(payload.get("exp", 0))
+    email = payload.get("email", "")
+    if len(_token_cache) >= _CACHE_MAX:
+        _token_cache.clear()
+    _token_cache[token] = (email, exp)
+
+    return payload
+
+
+def require_auth(request: Request) -> dict:
+    """FastAPI dependency: extract and verify Google JWT from Authorization header."""
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing authentication token")
+
+    token = auth_header[7:]
+    return _verify_google_token(token)
+
+
+# ── VAPI Webhook Auth ──────────────────────────────────────────────────────
+
+def require_vapi_secret(request: Request) -> None:
+    """Verify the x-vapi-secret header if VAPI_WEBHOOK_SECRET is configured."""
+    if not VAPI_WEBHOOK_SECRET:
+        return  # No secret configured, skip check
+    header_secret = request.headers.get("x-vapi-secret", "")
+    if not secrets.compare_digest(header_secret, VAPI_WEBHOOK_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid webhook secret")
+
 
 # ── SQL Safety ──────────────────────────────────────────────────────────────
 
@@ -147,10 +240,10 @@ TOOL_HANDLERS = {
     "display_comparison_table": handle_display_comparison_table,
 }
 
-# ── VAPI Webhook ────────────────────────────────────────────────────────────
+# ── VAPI Webhook (secret-protected) ────────────────────────────────────────
 
 @app.post("/vapi/webhook")
-async def vapi_webhook(request: Request):
+async def vapi_webhook(request: Request, _: None = Depends(require_vapi_secret)):
     body = await request.json()
     message = body.get("message", {})
     msg_type = message.get("type", "")
@@ -180,10 +273,10 @@ async def vapi_webhook(request: Request):
     return {"results": results}
 
 
-# ── Frontend Endpoints ──────────────────────────────────────────────────────
+# ── Frontend Endpoints (auth required) ─────────────────────────────────────
 
 @app.get("/api/table/{call_id}")
-async def get_table(call_id: str):
+async def get_table(call_id: str, _user: dict = Depends(require_auth)):
     """Polling endpoint: get the latest comparison table for a call."""
     data = table_store.get(call_id)
     if data:
@@ -192,7 +285,7 @@ async def get_table(call_id: str):
 
 
 @app.get("/api/table-stream/{call_id}")
-async def table_stream(call_id: str):
+async def table_stream(call_id: str, _user: dict = Depends(require_auth)):
     """SSE endpoint: stream comparison table updates for a call."""
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -226,7 +319,7 @@ async def table_stream(call_id: str):
 
 
 @app.get("/api/schema")
-async def get_schema():
+async def get_schema(_user: dict = Depends(require_auth)):
     """Return the database schema (useful for debugging/frontend display)."""
     with get_db() as conn:
         tables = conn.execute(
@@ -242,9 +335,25 @@ async def get_schema():
     return schema
 
 
+# ── Public Endpoints ───────────────────────────────────────────────────────
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "db_exists": os.path.exists(DB_PATH)}
+
+
+@app.on_event("startup")
+async def startup_warnings():
+    if not GOOGLE_CLIENT_ID:
+        logger.warning(
+            "GOOGLE_CLIENT_ID not set — /api/* auth will accept any valid Google token. "
+            "Set it in .env to restrict to your app's audience."
+        )
+    if not VAPI_WEBHOOK_SECRET:
+        logger.warning(
+            "VAPI_WEBHOOK_SECRET not set — /vapi/webhook is open to anyone. "
+            "Set it in .env and configure server.secret in VAPI to protect it."
+        )
 
 
 if __name__ == "__main__":

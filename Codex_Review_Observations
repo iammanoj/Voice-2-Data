@@ -1,0 +1,203 @@
+Voice-to-Data Executive Analytics Agent — Architecture + Code Review Observations
+Date: 2026-02-10
+Reviewer: Codex (staff+ system architect / code reviewer)
+Scope: PRD.md + codebase in /Users/manojmohan/Git-Code-Repo/Voice-2-Data (no README files present outside node_modules)
+
+1) Architecture Map
+Frontend
+- Vite + React 18 app with Tailwind UI.
+- VAPI Web SDK handles call lifecycle + transcript events.
+- SSE client subscribes to backend for comparison table updates (EventSource).
+- Local state only; no Hathora integration.
+
+Backend
+- FastAPI app exposing:
+  - POST /vapi/webhook: handles VAPI tool-calls, routes to query_analytics/display_comparison_table.
+  - GET /api/table/{call_id}: polling for latest table.
+  - GET /api/table-stream/{call_id}: SSE stream for table updates.
+  - GET /api/schema: SQLite schema inspection.
+  - GET /health: service/DB health.
+- SQL execution against local SQLite file engagement.db.
+- In-memory table_store + sse_queues keyed by VAPI call_id.
+
+Data Flow (high level)
+- User speaks → VAPI transcribes → LLM decides clarification or queries → VAPI tool-calls webhook → backend executes SQL → results returned to LLM → LLM speaks + calls display_comparison_table → backend publishes SSE → frontend renders table.
+
+APIs
+- VAPI API used by setup_vapi.py to create assistant/tools.
+- Backend provides webhook + table streaming endpoints.
+
+Auth
+- None. Backend allows all origins, no auth on endpoints.
+
+State Management
+- Frontend: React useState + hooks.
+- Backend: in-memory dicts keyed by call_id; ephemeral and per-process.
+
+Build/Deploy
+- Frontend: Vite build (tsc + vite build). No deployment scripts.
+- Backend: uvicorn run in server.py main. No containerization.
+- E2E script uses ngrok to expose local webhook and updates .env files.
+
+2) Component Diagram (bullet form)
+- Web Client (React/Vite)
+  - MicButton
+  - StatusIndicator
+  - ConversationPanel
+  - ComparisonTable
+  - useVapi hook (VAPI Web SDK)
+  - useTableStream hook (SSE + polling)
+- VAPI (external service)
+  - STT/TTS
+  - LLM function-calling
+  - Tool invocation to backend
+- Backend (FastAPI)
+  - /vapi/webhook router
+  - query_analytics handler
+  - display_comparison_table handler
+  - SSE/poll endpoints
+  - SQLite access layer
+- Data Store
+  - engagement.db (SQLite)
+- Tooling
+  - setup_vapi.py (assistant/tool provisioning)
+  - generate_data.py (synthetic data generation)
+  - test_e2e.sh (local orchestration + ngrok)
+
+3) Key Request Flow (end-to-end journey)
+Use case: “Why did product engagement drop last week?”
+1. User taps mic → frontend calls VAPI start with ASSISTANT_ID.
+2. VAPI streams transcript events to browser; UI updates status to listening/thinking.
+3. LLM decides to clarify or query; if querying, sends tool-calls to backend /vapi/webhook.
+4. Backend validate_sql (SELECT-only, blocked keywords) → executes query on engagement.db.
+5. Backend returns results as a text table string to VAPI.
+6. LLM synthesizes response; then calls display_comparison_table tool.
+7. Backend stores table under call_id and streams SSE to /api/table-stream/{call_id}.
+8. Frontend EventSource receives table and renders ComparisonTable.
+
+4) Dependency List
+Python packages (explicit usage)
+- fastapi
+- uvicorn (runtime server in server.py)
+- standard library: asyncio, sqlite3, logging, urllib, json, re, time, os
+
+React/JS libs
+- react
+- react-dom
+- @vapi-ai/web
+
+Build tooling
+- vite
+- typescript (tsc)
+- @vitejs/plugin-react
+- tailwindcss
+- postcss
+- autoprefixer
+
+External tooling in scripts
+- ngrok (test_e2e.sh)
+- curl, node, npm/npx
+
+5) High Risk List (likely bug hideouts)
+- Tool-call auth/authorization gaps: any party can POST /vapi/webhook and hit DB; no validation of VAPI signature or shared secret.
+- In-memory SSE state: table_store and sse_queues are per-process; multi-worker deployments will break updates and lose state.
+- call_id trust boundary: frontend uses callId from VAPI, backend trusts call_id from webhook; no correlation checks or session binding.
+- SQL safety: keyword blocking is naive; still accepts heavy or exfiltrating SELECTs and lacks resource limits.
+- Environment/config drift: .env for frontend is referenced in test_e2e.sh but missing in repo; build may silently fail if VITE vars absent.
+- CORS allow_origins="*" + allow_credentials=True is a misconfiguration risk.
+
+6) Top Issues by Severity
+Critical
+- No authentication or request verification on /vapi/webhook; arbitrary callers can execute SQL and push data to frontend streams.
+- SSE/table endpoints allow any caller to read table data if they guess call_id; no auth or session validation.
+
+High
+- State is in-memory and per-process, so scaling or restarting loses session data; contradicts PRD’s Hathora session model.
+- No rate limiting or query timeouts; malicious or accidental heavy queries can degrade server.
+- test_e2e.sh writes to .env and frontend/.env but repo lacks frontend/.env.example; devs will fail onboarding.
+
+Medium
+- SQL validation only blocks keywords; does not enforce read-only SQLite connection or query complexity limits.
+- Logging raw SQL and results risks leaking data (in a real dataset scenario).
+- No error handling for VAPI webhook payload shape changes; assumes message.type === "tool-calls".
+
+Low
+- Frontend uses local-only state for conversation; no persistence or reload behavior.
+- SSE fallback polling is fire-and-forget; pollTable’s cleanup function is never used, possible background loop after EventSource error.
+
+7) PRD vs Implementation Gaps
+Major gaps
+- Hathora session state is not implemented; state is in-memory only.
+- Scope awareness messaging is not enforced in backend; depends entirely on LLM prompt.
+- Clarification logic is not enforced in backend; relies on prompt compliance.
+- “Lovable” specific integrations are not present; frontend is plain React/Tailwind.
+- Auth is omitted despite any real executive product would need it (PRD says no auth for MVP, so gap only if beyond MVP).
+
+Minor gaps
+- Comparison table spec calls for columns including delta absolute + percentage; current UI shows a single delta string.
+- “Status Indicator” exists but PRD mentions “Listening/Thinking/Speaking” — implemented, but no error/failure states.
+- No explicit text-input fallback for noisy environments.
+
+8) Recommended Refactor Plan (phased)
+Phase 0: Stabilize MVP (1–2 days)
+- Add VAPI webhook verification (shared secret or signature) and reject unauthenticated requests.
+- Introduce a minimal session token mapping between frontend and backend; require it on /api/table* endpoints.
+- Add frontend/.env.example and document required VITE_* variables.
+
+Phase 1: Reliability + Maintainability
+- Create a config module for env vars with validation and clear error messages.
+- Add query execution limits (timeout, max rows, max cells) and read-only DB connection.
+- Centralize tool-call routing and payload validation (pydantic models).
+- Add minimal unit tests for validate_sql and webhook handler.
+
+Phase 2: State + Scale
+- Implement a real session store (Hathora or Redis) replacing in-memory dicts.
+- Add call_id/session binding so the frontend can only access its own stream.
+- Add structured data return for query_analytics to avoid string parsing by LLM.
+
+Phase 3: Product hardening
+- Introduce auth (OIDC or token-based) for real deployments.
+- Observability: request tracing, structured logs, metrics.
+- CI pipeline with lint/test/build for frontend and backend.
+
+9) Greenfield: What I Would Do Differently
+- Start with an explicit contract between LLM and backend (JSON schema results), avoid LLM parsing of text tables.
+- Use a persistent session store from day one (Hathora/Redis) for demo stability and future scaling.
+- Implement a small API gateway: auth, rate limiting, and request validation in front of /vapi/webhook.
+- Treat the dataset and SQL querying as a dedicated “analytics service” with enforced read-only connections.
+- Add a test harness for tool-calls and SSE rendering to guarantee demo flow.
+
+10) Quick Wins (1 day)
+- Add frontend/.env.example and a short setup doc in root.
+- Enforce a shared secret on /vapi/webhook and require it in setup_vapi.py server URL.
+- Add request/response logging guards to avoid dumping full SQL results in logs.
+- Add a simple /api/table-stream/{call_id}?token=... validation to prevent data leakage.
+- Add a lightweight test for validate_sql and a sample webhook payload test.
+
+11) Correctness, Security, Maintainability, Test Coverage, DX Audit
+Correctness
+- Core flow works for happy path; correctness depends on LLM prompt compliance.
+- No guaranteed schema-driven query construction; risk of LLM generating invalid SQL.
+
+Security
+- No auth; webhook and SSE endpoints are open.
+- CORS is permissive; combined with lack of auth raises exposure.
+
+Maintainability
+- Clear small codebase; single-file backend but lacks structured models.
+- Hardcoded logic for call_id storage; no separation of concerns.
+
+Test Coverage
+- No tests in repo.
+- test_e2e.sh is helpful but not automated and requires ngrok + live VAPI.
+
+Developer Experience
+- E2E script is good; however, missing frontend/.env example will block onboarding.
+- No README with quickstart or architecture diagram.
+
+12) Code Smells / Architectural Risks
+- In-memory state used as a substitute for session management; not future-proof.
+- Implicit trust of external tool-calls without verification.
+- Tool handlers return concatenated text strings; brittle for LLM parsing and front-end reliability.
+- No separation of transport from business logic in backend; hard to test or extend.
+

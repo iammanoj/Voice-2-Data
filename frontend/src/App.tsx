@@ -1,3 +1,5 @@
+import { AuthProvider, useAuth } from "./hooks/useAuth";
+import { LoginScreen } from "./components/LoginScreen";
 import { useVapi } from "./hooks/useVapi";
 import { useTableStream } from "./hooks/useTableStream";
 import { ConversationPanel } from "./components/ConversationPanel";
@@ -5,9 +7,10 @@ import { ComparisonTable } from "./components/ComparisonTable";
 import { MicButton } from "./components/MicButton";
 import { StatusIndicator } from "./components/StatusIndicator";
 
-export default function App() {
+function MainApp() {
+  const { user, credential, logout } = useAuth();
   const { callStatus, speechStatus, messages, callId, toggleCall } = useVapi();
-  const table = useTableStream(callId);
+  const table = useTableStream(callId, credential);
 
   return (
     <div className="flex h-screen flex-col bg-gray-950 text-gray-100">
@@ -33,7 +36,27 @@ export default function App() {
           </div>
         </div>
 
-        <StatusIndicator callStatus={callStatus} speechStatus={speechStatus} />
+        <div className="flex items-center gap-4">
+          <StatusIndicator callStatus={callStatus} speechStatus={speechStatus} />
+
+          {user && (
+            <div className="flex items-center gap-3 border-l border-gray-800/50 pl-4">
+              <img
+                src={user.picture}
+                alt={user.name}
+                referrerPolicy="no-referrer"
+                className="h-7 w-7 rounded-full"
+              />
+              <span className="text-xs text-gray-400">{user.name}</span>
+              <button
+                onClick={logout}
+                className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                Sign out
+              </button>
+            </div>
+          )}
+        </div>
       </header>
 
       {/* Main content: two panels */}
@@ -68,5 +91,18 @@ export default function App() {
         <MicButton callStatus={callStatus} onClick={toggleCall} />
       </footer>
     </div>
+  );
+}
+
+function AppShell() {
+  const { user } = useAuth();
+  return user ? <MainApp /> : <LoginScreen />;
+}
+
+export default function App() {
+  return (
+    <AuthProvider>
+      <AppShell />
+    </AuthProvider>
   );
 }

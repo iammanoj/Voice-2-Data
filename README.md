@@ -142,7 +142,9 @@ Voice-2-Data/
 │   │   ├── App.tsx                    # Main layout
 │   │   ├── hooks/useVapi.ts           # VAPI Web SDK integration
 │   │   ├── hooks/useTableStream.ts    # SSE for live table updates
+│   │   ├── hooks/useAuth.tsx          # Google auth context + JWT validation
 │   │   ├── components/
+│   │   │   ├── LoginScreen.tsx        # Google Sign-In login page
 │   │   │   ├── ConversationPanel.tsx   # Chat transcript
 │   │   │   ├── ComparisonTable.tsx     # Before/after data table
 │   │   │   ├── MicButton.tsx           # Mic button with animations
@@ -187,6 +189,54 @@ Voice-2-Data/
 | `/api/table-stream/{call_id}` | GET | SSE stream for live table updates |
 | `/api/schema` | GET | Database schema |
 | `/health` | GET | Health check |
+
+## Authentication
+
+Google Sign-In is enforced on both frontend and backend.
+
+**Frontend:** `@react-oauth/google` gates the app behind a login screen. The Google JWT is stored in `sessionStorage` and sent with every API request.
+
+**Backend:** All `/api/*` endpoints require a valid Google JWT. The server verifies tokens against Google's `tokeninfo` endpoint (full signature + claims verification, cached in-memory). Set `GOOGLE_CLIENT_ID` in `.env` to restrict tokens to your app's audience.
+
+| Endpoint | Auth |
+|---|---|
+| `/api/*` | Google JWT required (`Authorization: Bearer` header) |
+| `/vapi/webhook` | `x-vapi-secret` header (set `VAPI_WEBHOOK_SECRET` in `.env`) |
+| `/health` | Public |
+
+The webhook secret is configured in both the backend `.env` and the VAPI assistant's `server.secret` (set via `setup_vapi.py` or the VAPI dashboard). VAPI sends the `x-vapi-secret` header on every webhook call; the backend verifies it with constant-time comparison.
+
+## Real Data Ingestion (REES46 + GA)
+
+This repo includes a stdlib-only ingester that loads large real datasets into the existing SQLite schema (no schema changes required).
+
+### Expected files (CSV or CSV.gz)
+
+- REES46 multi-category events: `rees46_events.csv`
+  - Must include: `event_time`, `event_type`, `user_id`, `user_session`
+  - Optional: `category_code`, `brand`, `product_id`, `price`, `country`
+
+- GA revenue prediction sessions: `ga_sessions.csv`
+  - Must include: `date` (YYYYMMDD) and `fullVisitorId`
+  - Optional (any format): `visitId`, `device.deviceCategory`, `geoNetwork.country`,
+    `trafficSource.medium`, `trafficSource.source`, `totals.pageviews`, `totals.timeOnSite`,
+    `totals.transactions`, `totals.transactionRevenue`
+
+### Run ingest
+
+Place the CSVs in the repo root and run:
+
+```bash
+python3 ingest_real_data.py \
+  --db ./engagement.db \
+  --rees46 ./rees46_events.csv \
+  --ga ./ga_sessions.csv \
+  --reset
+```
+
+Options:
+- `--limit 100000` to cap rows per dataset
+- `.csv.gz` inputs are supported
 
 ## Troubleshooting
 

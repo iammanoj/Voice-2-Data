@@ -37,6 +37,7 @@ def load_env():
 env = load_env()
 API_KEY = env.get("VAPI_API_KEY", "")
 SERVER_URL = env.get("SERVER_URL", "")
+WEBHOOK_SECRET = env.get("VAPI_WEBHOOK_SECRET", "")
 
 if not API_KEY or API_KEY == "your-vapi-api-key-here":
     print("ERROR: Set VAPI_API_KEY in .env")
@@ -44,8 +45,15 @@ if not API_KEY or API_KEY == "your-vapi-api-key-here":
 if not SERVER_URL or "your-ngrok-url" in SERVER_URL:
     print("ERROR: Set SERVER_URL in .env (run ngrok http 8000 first)")
     sys.exit(1)
+if not WEBHOOK_SECRET or WEBHOOK_SECRET == "your-webhook-secret-here":
+    print("WARNING: VAPI_WEBHOOK_SECRET not set in .env — webhook will be unprotected.")
 
 VAPI_BASE = "https://api.vapi.ai"
+
+# Build server config (shared by tools and assistant)
+SERVER_CONFIG: dict = {"url": SERVER_URL, "timeoutSeconds": 20}
+if WEBHOOK_SECRET:
+    SERVER_CONFIG["secret"] = WEBHOOK_SECRET
 
 # ── API helpers ─────────────────────────────────────────────────────────────
 
@@ -96,13 +104,9 @@ QUERY_ANALYTICS_TOOL = {
             "required": ["sql_query", "query_description"],
         },
     },
-    "server": {
-        "url": SERVER_URL,
-        "timeoutSeconds": 20,
-    },
+    "server": SERVER_CONFIG,
     "messages": [
-        {"type": "request-start", "content": "Let me look into that for you."},
-        {"type": "request-failed", "content": "I had trouble querying the data. Let me try again."},
+        {"type": "request-failed", "content": "I had trouble querying the data. Let me try a different approach."},
         {"type": "request-response-delayed", "content": "Still crunching the numbers, one moment."},
     ],
 }
@@ -146,10 +150,7 @@ DISPLAY_TABLE_TOOL = {
             "required": ["title", "columns", "rows"],
         },
     },
-    "server": {
-        "url": SERVER_URL,
-        "timeoutSeconds": 20,
-    },
+    "server": SERVER_CONFIG,
     "messages": [
         {"type": "request-start", "content": "Putting the breakdown on your screen now."},
         {"type": "request-failed", "content": "I couldn't display the table, but I'll summarize verbally."},
