@@ -259,8 +259,16 @@ async def vapi_webhook(request: Request, _: None = Depends(require_vapi_secret))
     results = []
     for tool_call in tool_call_list:
         tc_id = tool_call.get("id", "")
-        tc_name = tool_call.get("name", "")
-        tc_args = tool_call.get("arguments", {})
+        # VAPI sends tool calls in OpenAI format: {function: {name, arguments}}
+        func = tool_call.get("function", {})
+        tc_name = func.get("name", "") or tool_call.get("name", "")
+        tc_args = func.get("arguments", {}) or tool_call.get("arguments", {})
+        # arguments may be a JSON string — parse it
+        if isinstance(tc_args, str):
+            try:
+                tc_args = json.loads(tc_args)
+            except (json.JSONDecodeError, ValueError):
+                tc_args = {}
 
         handler = TOOL_HANDLERS.get(tc_name)
         if handler:

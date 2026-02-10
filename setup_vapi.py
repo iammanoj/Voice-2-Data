@@ -248,11 +248,7 @@ def main():
 
     assistant = vapi_post("/assistant", {
         "name": "Voice-to-Data Analytics Agent",
-        "firstMessage": (
-            "Good morning. I'm your product analytics assistant. "
-            "You can ask me about engagement metrics, feature adoption, "
-            "conversion funnels, and more. What would you like to know?"
-        ),
+        "firstMessage": "Hi, what would you like to know?",
         "firstMessageMode": "assistant-speaks-first",
         "model": {
             "provider": "openai",
@@ -271,10 +267,7 @@ def main():
             "model": "nova-2",
             "language": "en",
         },
-        "server": {
-            "url": SERVER_URL,
-            "timeoutSeconds": 20,
-        },
+        "server": SERVER_CONFIG,
         "stopSpeakingPlan": {
             "numWords": 0,
             "voiceSeconds": 0.2,

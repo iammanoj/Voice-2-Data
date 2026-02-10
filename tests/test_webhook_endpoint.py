@@ -144,6 +144,66 @@ def test_multiple_tool_calls_in_one_request(client, db):
     assert ids == {"tc_a", "tc_b"}
 
 
+def test_nested_function_format_query_analytics(client, db):
+    """VAPI sends tool calls in OpenAI format: {function: {name, arguments(string)}}."""
+    payload = {
+        "message": {
+            "type": "tool-calls",
+            "call": {"id": "call_nested"},
+            "toolCallList": [
+                {
+                    "id": "tc_nested_1",
+                    "type": "function",
+                    "function": {
+                        "name": "query_analytics",
+                        "arguments": '{"sql_query": "SELECT platform, dau FROM daily_metrics LIMIT 2", "query_description": "DAU test"}',
+                    },
+                }
+            ],
+        }
+    }
+    resp = client.post("/vapi/webhook", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["results"]) == 1
+    assert data["results"][0]["toolCallId"] == "tc_nested_1"
+    result = data["results"][0]["result"]
+    assert "rows" in result.lower() or "dau" in result.lower()
+    assert "unknown function" not in result.lower()
+
+
+def test_nested_function_format_display_table(client):
+    """VAPI nested format with display_comparison_table."""
+    import json as _json
+
+    args = _json.dumps({
+        "title": "Test Table",
+        "columns": ["A", "B"],
+        "rows": [{"dimension": "X", "previous_value": "1", "current_value": "2", "delta": "+100%", "is_top_contributor": True}],
+    })
+    payload = {
+        "message": {
+            "type": "tool-calls",
+            "call": {"id": "call_nested_table"},
+            "toolCallList": [
+                {
+                    "id": "tc_nested_2",
+                    "type": "function",
+                    "function": {
+                        "name": "display_comparison_table",
+                        "arguments": args,
+                    },
+                }
+            ],
+        }
+    }
+    resp = client.post("/vapi/webhook", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["results"][0]["toolCallId"] == "tc_nested_2"
+    assert "displayed" in data["results"][0]["result"].lower()
+
+
 def test_missing_call_id_defaults_to_unknown(client, db):
     payload = {
         "message": {
